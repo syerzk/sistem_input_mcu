@@ -1,0 +1,6 @@
+{
+  "name": "Sistem Input MCU Rutin RS PT Pusri",
+  "description": "Aplikasi Web Input Data Medical Check Up (MCU) Rutin Karyawan Rumah Sakit PT Pusri Palembang (Jadwal 1 Tahun untuk Pria dan 2 Tahun untuk Wanita)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  # 1. Database PostgreSQL 17
+  mcu-db:
+    image: postgres:17-alpine
+    container_name: mcu_postgres_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: admin                 # Disesuaikan dari PG_PASSWORD
+      POSTGRES_DB: db_mcu_karyawan          # Disesuaikan dari PG_NAME
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # 2. Backend Go
+  mcu-backend:
+    build:
+      context: ./backend_mcu                 # Nama folder backend kamu[cite: 2]
+      dockerfile: Dockerfile
+    container_name: mcu_go_backend
+    restart: always
+    ports:
+      - "8080:8080"
+    env_file:
+      - ./backend_mcu/.env                   # Membaca .env backend baru[cite: 2]
+    depends_on:
+      - mcu-db
+
+  # 3. Frontend React
+  mcu-frontend:
+    build:
+      context: ./frontend_mcu # Nama folder frontend kamu[cite: 2]
+      dockerfile: Dockerfile
+    container_name: mcu_react_frontend
+    restart: always
+    ports:
+      - "3000:80"
+    depends_on:
+      - mcu-backend
+
+volumes:
+  postgres_data:

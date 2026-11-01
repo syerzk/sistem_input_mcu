@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Jalankan Backend MCU (Golang)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/backend-go/main.go",
+      "cwd": "${workspaceFolder}/backend-go",
+      "env": {
+        "PORT": "8080",
+        "FIREBASE_PROJECT_ID": "zeta-isomer-5vd6f",
+        "FIRESTORE_DATABASE_ID": "ai-studio-sisteminputmcuru-8729d46b-3f4e-42f7-8197-1c47991c029d"
+      }
+    }
+  ]
+}

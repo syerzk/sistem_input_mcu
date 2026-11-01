@@ -1,0 +1,41 @@
+{
+  "entities": {
+    "system_settings": {
+      "title": "System Settings",
+      "description": "Global application configuration including admin security PIN",
+      "type": "object",
+      "properties": {
+        "pin": { "type": "string", "description": "Admin security PIN" },
+        "updatedAt": { "type": "string", "description": "Last updated ISO timestamp" }
+      },
+      "required": ["pin"]
+    },
+    "mcu_records": {
+      "title": "MCU Record",
+      "description": "Medical Check Up records for PT Pusri employees",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "badge": { "type": "string" },
+        "nama": { "type": "string" },
+        "bagian": { "type": "string" },
+        "jenisKelamin": { "type": "string" },
+        "umur": { "type": "string" },
+        "tanggal": { "type": "string" },
+        "hasilPemkes": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "badge", "nama", "tanggal"]
+    }
+  },
+  "firestore": {
+    "/system_settings/{settingId}": {
+      "schema": "system_settings",
+      "description": "System settings such as admin_auth"
+    },
+    "/mcu_records/{recordId}": {
+      "schema": "mcu_records",
+      "description": "Employee MCU records"
+    }
+  }
+}

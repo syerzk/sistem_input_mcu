@@ -1,0 +1,66 @@
+@import "tailwindcss";
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm 10mm;
+  }
+
+  /* Reset layout utama browser */
+  html, body {
+    background: white !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Sembunyikan elemen latar belakang di luar modal */
+  body * {
+    visibility: hidden;
+  }
+
+  /* Tampilkan area modal laporan secara utuh */
+  .fixed.inset-0,
+  .fixed.inset-0 * {
+    visibility: visible !important;
+  }
+
+  /* Tarik modal ke paling atas halaman 1 (menghilangkan halaman kosong di awal) */
+  .fixed.inset-0 {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: white !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    display: block !important;
+  }
+
+  /* Matikan bingkai scrollbar internal agar tidak memotong teks/garis border */
+  .overflow-y-auto,
+  .max-h-\[92vh\] {
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+  }
+
+  /* Sembunyikan tombol header modal */
+  .print\:hidden {
+    display: none !important;
+  }
+
+  /* Jaga agar setiap seksi tidak terpotong di tengah baris */
+  .break-inside-avoid,
+  table,
+  tr {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+}

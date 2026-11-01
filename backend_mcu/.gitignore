@@ -1,0 +1,27 @@
+#File Konfigurasi
+.env
+.env.local
+*.env
+
+# File Hasil Build 
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+server
+main
+app
+backend_mcu
+
+*.sql
+
+# File Log & Temporary
+*.log
+tmp/
+dist/
+
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
