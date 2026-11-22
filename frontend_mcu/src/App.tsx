@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { MCURecord } from './types';
 import { INITIAL_MCU_RECORDS } from './data/mockData';
 import { getInitialMCURecord, formatIndonesianDate } from './utils/mcuHelpers';
+import Login from './components/Login';
 import { HeaderNavbar } from './components/HeaderNavbar';
 import { ScheduleReminderBanner } from './components/ScheduleReminderBanner';
 import { TabUmum } from './components/tabs/TabUmum';
@@ -22,8 +22,19 @@ import { WelcomePortal } from './components/WelcomePortal';
 import { BadgeEntryPage } from './components/BadgeEntryPage';
 import { MySqlManagerModal } from './components/MySqlManagerModal';
 import { ConfirmSaveModal } from './components/ConfirmSaveModal';
-import { isAdminSessionActive, setAdminSession } from './utils/adminAuth';
+import { DoctorManagerPage } from './components/DoctorManagerPage';
+
+import { MCURecord, AuthSession, UserRole } from './types';
 import { API_BASE_URL } from './config/api';
+
+import {
+  isAdminSessionActive,
+  setAdminSession,
+  getAuthSession,
+  getAuthHeaders,
+  clearAuthSession,
+  isAdminRole
+} from './utils/adminAuth';
 
 import {
   saveMySqlRecord,
@@ -64,7 +75,7 @@ import {
 } from 'lucide-react';
 
 type TabKey = 'UMUM' | 'FISIK' | 'FISIK (2)' | 'LABORATORIUM' | 'KIMIA KLINIK' | 'SARAN DR';
-type AppPage = 'PORTAL' | 'BADGE_ENTRY' | 'MCU_DETAIL';
+type AppPage = 'LOGIN' | 'PORTAL' | 'BADGE_ENTRY' | 'MCU_DETAIL';
 
 const TABS: TabKey[] = ['UMUM', 'FISIK', 'FISIK (2)', 'LABORATORIUM', 'KIMIA KLINIK', 'SARAN DR'];
 
@@ -102,22 +113,29 @@ export default function App() {
     return 'UMUM';
   });
 
-  const [enableEdit, setEnableEdit] = useState<boolean>(true);
+  const [enableEdit, setEnableEdit] = useState<boolean>(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
-  
+
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [isExcelModalOpen, setIsExcelModalOpen] = useState(false);
   const [isScheduleTrackerOpen, setIsScheduleTrackerOpen] = useState(false);
   const [isDataListOpen, setIsDataListOpen] = useState(false);
   const [isMySqlOpen, setIsMySqlOpen] = useState(false);
+
+  const [activeSideMenu, setActiveSideMenu] = useState<'MCU_INPUT' | 'MASTER_DOCTORS'>(() =>
+    window.location.pathname.toLocaleLowerCase() === '/master-dokter' ? 'MASTER_DOCTORS' : 'MCU_INPUT'
+  );
+
+  const [doctorsRefreshKey, setDoctorsRefreshKey] = useState(0);
   
   // State untuk Modal Konfirmasi Simpan
   const [isConfirmSaveOpen, setIsConfirmSaveOpen] = useState(false);
   const [isSavingRecord, setIsSavingRecord] = useState(false);
   
-  const [isAdmin, setIsAdmin] = useState<boolean>(() => {
-    return isAdminSessionActive();
-  });
+  const [authSession] = useState<AuthSession | null>(() => getAuthSession());
+  const [isAdmin, setIsAdmin] = useState<boolean>(() => isAdminRole());
+  const userRole: UserRole | null = authSession?.role ?? (isAdmin ? 'admin' : null);
+  
   const [isAdminLoginOpen, setIsAdminLoginOpen] = useState(false);
   const [adminLoginPurpose, setAdminLoginPurpose] = useState<'DATABASE' | 'EXCEL_IMPORT' | null>(null);
   const [isChangePinOpen, setIsChangePinOpen] = useState(false);
@@ -127,21 +145,66 @@ export default function App() {
 
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const [currentPage, setCurrentPage] = useState<AppPage>(() => {
-    try {
-      const savedPage = sessionStorage.getItem('pusri_mcu_page');
-      if (savedPage === 'BADGE_ENTRY' || savedPage === 'MCU_DETAIL' || savedPage === 'PORTAL') {
-        return savedPage as AppPage;
+ const [currentPage, setCurrentPage] = useState<AppPage>(() => {
+  try {
+    // Proteksi Rute: Cek apakah user benar-benar sudah login
+    const isLoggedIn = sessionStorage.getItem('pusri_mcu_is_logged_in') === 'true';
+    if (!isLoggedIn) {
+      sessionStorage.setItem('pusri_mcu_page', 'LOGIN');
+      const params = new URLSearchParams(window.location.search);
+      const hasResetToken = Boolean((params.get('reset_token') || '').trim());
+      if (window.location.pathname !== '/login' && !hasResetToken) {
+        window.history.replaceState(null, '', '/login');
       }
-      const entered = sessionStorage.getItem('pusri_mcu_portal_entered');
-      if (entered === 'true') {
-        return 'BADGE_ENTRY';
-      }
-    } catch {
-      // fallback
+      return 'LOGIN'; // Jika belum login, paksa ke halaman LOGIN
     }
-    return 'PORTAL';
-  });
+
+    const path = window.location.pathname.toLowerCase();
+    if (path === '/portal') return 'PORTAL';
+    if (path === '/badge') return 'BADGE_ENTRY';
+    if (path === '/mcu-detail' || path === '/master-dokter') return 'MCU_DETAIL';
+
+    const savedPage = sessionStorage.getItem('pusri_mcu_page');
+    if (['LOGIN', 'PORTAL', 'BADGE_ENTRY', 'MCU_DETAIL'].includes(savedPage || '')) {
+      return savedPage as AppPage;
+    }
+  } catch {
+    // fallback
+  }
+  return 'LOGIN';
+});
+
+useEffect(() => {
+  const pathMap: Record<AppPage, string> = {
+    LOGIN: '/login', 
+    PORTAL: '/portal', 
+    BADGE_ENTRY: '/badge',
+    MCU_DETAIL: activeSideMenu === 'MASTER_DOCTORS' ? '/master-dokter' : '/mcu-detail',
+  };
+  const targetPath = pathMap[currentPage]; 
+  if (targetPath && window.location.pathname !== targetPath){
+    window.history.pushState(null, '', targetPath);
+  }
+}, [currentPage, activeSideMenu]);
+
+const handleLoginSuccess = (userData?: { role: string; nama: string; token?: string }) => {
+  //  Periksa apakah role yang login adalah admin, lalu set state admin secara reaktif
+  if (userData?.role === 'admin' || isAdminRole()) {
+    setIsAdmin(true);
+    setAdminSession(true);
+  } else {
+    setIsAdmin(false);
+  }
+
+  setCurrentPage('PORTAL');
+  try {
+    sessionStorage.setItem('pusri_mcu_page', 'PORTAL');
+    sessionStorage.setItem('pusri_mcu_is_logged_in', 'true');
+  } catch (e) {
+    console.error(e);
+  }
+  showToast('Login berhasil! Selamat datang di Portal MCU.');
+};
 
   const handleEnterMCU = () => {
     setCurrentPage('BADGE_ENTRY');
@@ -172,29 +235,72 @@ export default function App() {
       console.error(e);
     }
   };
+  
+  const syncSavedRecordToList = (rec: MCURecord) => {
+    const recIdStr = String(rec.id ?? '').trim();
+    const hasValidDbId =
+      recIdStr !== '' &&
+      recIdStr !== '0' &&
+      !recIdStr.toUpperCase().startsWith('MCU-');
+
+    if (!hasValidDbId || !rec.badge) return;
+
+    const recYear = String(rec.testTahun || '2026');
+    const recSpouse = Boolean(rec.isSpouse);
+
+    setRecords((prev) => {
+      const idx = prev.findIndex(
+        (r) =>
+          String(r.id) === recIdStr ||
+          (r.badge?.toLowerCase() === rec.badge?.toLowerCase() &&
+            Boolean(r.isSpouse) === recSpouse &&
+            String(r.testTahun || '2026') === recYear)
+      );
+
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = { ...next[idx], ...rec };
+        return next;
+      }
+      return [rec, ...prev];
+    });
+  };
 
   const handleProceedFromBadge = (selectedRecord: MCURecord) => {
     const existingRecord = records.find(
-      (r) => r.id === selectedRecord.id || (r.badge && selectedRecord.badge && r.badge.toLowerCase() === selectedRecord.badge.toLowerCase() && r.isSpouse === selectedRecord.isSpouse && r.testTahun === selectedRecord.testTahun)
+      (r) =>
+        (String(r.id) !== '0' && !String(r.id).startsWith('MCU-') && String(r.id) === String(selectedRecord.id)) ||
+        (Boolean(r.badge && selectedRecord.badge) &&
+          r.badge.toLowerCase() === selectedRecord.badge.toLowerCase() &&
+          Boolean(r.isSpouse) === Boolean(selectedRecord.isSpouse) &&
+          String(r.testTahun) === String(selectedRecord.testTahun))
     );
 
-    const targetRecord = existingRecord ? { ...existingRecord, ...selectedRecord } : {
-      ...getInitialMCURecord(),
-      badge: selectedRecord.badge || '',
-      nama: selectedRecord.nama || '',
-      testTahun: selectedRecord.testTahun || '2026',
-      isSpouse: selectedRecord.isSpouse || false
-    };
+    const targetRecord = existingRecord
+      ? { ...existingRecord, ...selectedRecord }
+      : {
+          ...getInitialMCURecord(),
+          ...selectedRecord,
+          id: '0',
+          badge: selectedRecord.badge || '',
+          nama: selectedRecord.nama || '',
+          testTahun: selectedRecord.testTahun || '2026',
+          isSpouse: selectedRecord.isSpouse || false
+        };
 
-    setRecords((prev) => {
-      const exists = prev.some((r) => r.id === targetRecord.id);
-      if (!exists) {
-        return [targetRecord, ...prev];
-      }
-      return prev.map((r) => r.id === targetRecord.id ? { ...r, ...targetRecord } : r);
-    });
+    // Sinkronkan ke state records jika record berasal dari database (ID valid)
+    const targetIdStr = String(targetRecord.id ?? '').trim();
+    const isPersistedDbRecord =
+      targetIdStr !== '' &&
+      targetIdStr !== '0' &&
+      !targetIdStr.toUpperCase().startsWith('MCU-');
 
-    if (existingRecord) {
+    if (existingRecord || isPersistedDbRecord) {
+      syncSavedRecordToList(targetRecord);
+    }
+
+
+    if ( isAdmin && existingRecord) {
       saveMySqlRecord(targetRecord).catch(() => {});
     }
 
@@ -208,6 +314,7 @@ export default function App() {
     }
 
     setCurrentRecord(targetRecord);
+    setEnableEdit(false);
     setCurrentPage('MCU_DETAIL');
     setActiveTab('UMUM');
     try {
@@ -227,40 +334,56 @@ export default function App() {
 
     const initData = async () => {
       try {
-        const mysqlRecords = await fetchMySqlRecords();
-        if (mysqlRecords && mysqlRecords.length > 0) {
-          setRecords(mysqlRecords);
-        } else {
-          setRecords([]);
+        let loadedFromList = false;
+        try {
+          const mysqlRecords = await fetchMySqlRecords();
+          if (Array.isArray(mysqlRecords)) {
+            setRecords(mysqlRecords);
+            loadedFromList = true;
+          }
+          setIsCloudConnected(true);
+        } catch (listErr) {
+          console.error("Gagal mengambil daftar records dari database:", listErr);
         }
-        setIsCloudConnected(true);
 
         const activeId = sessionStorage.getItem('pusri_active_mcu_id');
         const activeBadge = sessionStorage.getItem('pusri_active_mcu_badge');
         const activeIsSpouse = sessionStorage.getItem('pusri_active_mcu_is_spouse') === 'true';
         const activeYear = sessionStorage.getItem('pusri_active_mcu_year') || '2026';
-        
-        if (activeId || activeBadge) {
+
+        if (activeBadge && activeBadge.trim() !== '') {
           try {
-            const targetId = activeId || (activeIsSpouse ? `MCU-${activeYear}-${activeBadge?.trim()}-spouse` : `MCU-${activeYear}-${activeBadge?.trim()}`);
-           const url = `${API_BASE_URL}/api/records/badge/${activeBadge?.trim() || ''}?id=${encodeURIComponent(targetId)}&is_spouse=${activeIsSpouse}&test_tahun=${activeYear}`;
-            
-            const res = await fetch(url);
+            const targetId =
+              activeId ||
+              (activeIsSpouse
+                ? `MCU-${activeYear}-${activeBadge.trim()}-spouse`
+                : `MCU-${activeYear}-${activeBadge.trim()}`);
+            const url = `${API_BASE_URL}/api/records/badge/${activeBadge.trim()}?id=${encodeURIComponent(targetId)}&is_spouse=${activeIsSpouse}&test_tahun=${activeYear}`;
+
+            const res = await fetch(url, { headers: getAuthHeaders() });
             const json = await res.json();
             if (json.success && json.data) {
               const recordData = json.data.mcuRecord || json.data;
               if (recordData && (recordData.badge || recordData.id)) {
                 setCurrentRecord(recordData);
+                syncSavedRecordToList(recordData);
+                setIsCloudConnected(true);
               }
             }
           } catch (err) {
             console.error("Gagal memuat detail aktif dari backend:", err);
           }
         }
+
+        if (!loadedFromList) {
+          setIsCloudConnected(false);
+        }
       } catch (err) {
-        console.error("Gagal mengambil data dari MySQL", err);
+        console.error("Gagal inisialisasi data:", err);
         setIsCloudConnected(false);
-      } finally {
+      }
+      
+      finally {
         setIsCloudSyncing(false);
         setIsLoadingData(false);
       }
@@ -302,12 +425,8 @@ export default function App() {
   };
 
   const handleOpenDatabase = () => {
-    if (isAdmin) {
-      setIsDataListOpen(true);
-    } else {
-      setAdminLoginPurpose('DATABASE');
-      setIsAdminLoginOpen(true);
-    }
+    // 👈 Langsung buka Database Pasien tanpa pop-up PIN/password jika admin
+    setIsDataListOpen(true);
   };
 
   const handleAdminLoginSuccess = () => {
@@ -316,10 +435,10 @@ export default function App() {
     setIsAdminLoginOpen(false);
     if (adminLoginPurpose === 'EXCEL_IMPORT') {
       setIsExcelModalOpen(true);
-      showToast('🔓 Mode Admin Terverifikasi. Silakan pilih & impor file Excel.');
+      showToast('Mode Admin Terverifikasi. Silakan pilih & impor file Excel.');
     } else {
       setIsDataListOpen(true);
-      showToast('🔓 Hak Akses Admin Terverifikasi. Membuka Database Pasien.');
+      showToast('Hak Akses Admin Terverifikasi. Membuka Database Pasien.');
     }
     setAdminLoginPurpose(null);
   };
@@ -327,11 +446,11 @@ export default function App() {
   const handleLockAdmin = () => {
     setAdminSession(false);
     setIsAdmin(false);
-    showToast('🔒 Akses Admin Berhasil Dikunci.');
+    showToast('Akses Admin Berhasil Dikunci.');
   };
 
   const handlePinChangeSuccess = (_newPin: string) => {
-    showToast('🔑 PIN / Password Admin berhasil diperbarui!');
+    showToast('PIN / Password Admin berhasil diperbarui!');
   };
 
  const handleUpdateCurrentRecord = async (updates: Partial<MCURecord>) => {
@@ -435,29 +554,43 @@ export default function App() {
       return;
     }
 
-    setRecords((prev) => {
-      const existingIdx = prev.findIndex(
-        (r) =>
-          (String(r.id) !== '0' && String(r.id) === String(updatedRecord.id)) ||
-          (r.badge?.toLowerCase() === updatedRecord.badge?.toLowerCase() &&
+    // Ambil ulang daftar terbaru dari database agar ID asli PostgreSQL langsung sinkron tanpa duplikat
+    try {
+      const freshRecords = await fetchMySqlRecords();
+      if (freshRecords && freshRecords.length > 0) {
+        setRecords(freshRecords);
+        const matchedFresh = freshRecords.find(
+          (r) =>
+            r.badge?.toLowerCase() === updatedRecord.badge?.toLowerCase() &&
             Boolean(r.isSpouse) === Boolean(updatedRecord.isSpouse) &&
-            String(r.testTahun) === String(testYear))
-      );
-
-      if (existingIdx >= 0) {
-        const updated = [...prev];
-        updated[existingIdx] = updatedRecord;
-        return updated;
-      } else {
-        return [
-          {
-            ...updatedRecord,
-            createdAt: new Date().toISOString()
-          },
-          ...prev
-        ];
+            String(r.testTahun) === String(testYear)
+        );
+        if (matchedFresh) {
+          setCurrentRecord((prev) => ({
+            ...prev,
+            ...matchedFresh,
+          }));
+        }
       }
-    });
+    } catch {
+      // Fallback ke state lokal jika gagal fetch ulang
+      setRecords((prev) => {
+        const existingIdx = prev.findIndex(
+          (r) =>
+            (String(r.id) !== '0' && String(r.id) === String(updatedRecord.id)) ||
+            (r.badge?.toLowerCase() === updatedRecord.badge?.toLowerCase() &&
+              Boolean(r.isSpouse) === Boolean(updatedRecord.isSpouse) &&
+              String(r.testTahun) === String(testYear))
+        );
+
+        if (existingIdx >= 0) {
+          const updated = [...prev];
+          updated[existingIdx] = updatedRecord;
+          return updated;
+        }
+        return [{ ...updatedRecord, createdAt: new Date().toISOString() }, ...prev];
+      });
+    }
 
     setIsSavingRecord(false);
     setIsConfirmSaveOpen(false);
@@ -494,6 +627,7 @@ export default function App() {
         console.error(e);
       }
       setCurrentRecord(found);
+      setEnableEdit(false);
       showToast(`Memuat data MCU: ${found.nama} (${found.badge})`);
     }
   };
@@ -523,14 +657,15 @@ export default function App() {
         console.error(e);
       }
       setCurrentRecord(foundLocal);
+      setEnableEdit(false);
       showToast(`Berhasil memuat data MCU: ${foundLocal.nama} (Badge: ${foundLocal.badge})`);
       return;
     }
 
     try {
-      const url = `${API_BASE_URL}/api/records/badge/${trimmed}?is_spouse=${isSpouseActive}&test_tahun=${testYear}`;
+     const url = `${API_BASE_URL}/api/records/badge/${trimmed}?is_spouse=${isSpouseActive}&test_tahun=${testYear}`;
         
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: getAuthHeaders() });
       const json = await res.json();
 
       if (json.success && json.data) {
@@ -545,7 +680,9 @@ export default function App() {
             console.error(e);
           }
           setCurrentRecord(recordData);
-          showToast(`✅ Berhasil memuat data MCU dari Database: ${recordData.nama} (Badge: ${recordData.badge})`);
+          syncSavedRecordToList(recordData);
+          setEnableEdit(false);
+          showToast(` Berhasil memuat data MCU dari Database: ${recordData.nama} (Badge: ${recordData.badge})`);
           return;
         }
       }
@@ -553,7 +690,22 @@ export default function App() {
       console.log("Gagal memuat dari backend.");
     }
 
-    showToast(`⚠️ Data belum ada. Silakan lengkapi formulir dan simpan.`);
+    // Siapkan form draf baru untuk tahun/status pasien yang dipilih jika memang belum ada di DB
+    setCurrentRecord((prev) => ({
+      ...getInitialMCURecord(),
+      id: '0',
+      badge: trimmed,
+      nama: prev.badge === trimmed ? prev.nama : '',
+      jenisKelamin: prev.badge === trimmed ? prev.jenisKelamin : 'L',
+      golDarah: prev.badge === trimmed ? prev.golDarah : 'O',
+      shift: prev.badge === trimmed ? prev.shift : 'NS',
+      bagian: prev.badge === trimmed ? prev.bagian : prev.bagian,
+      isSpouse: isSpouseActive,
+      testTahun: testYear,
+      tanggal: `${testYear}-01-01`,
+    }));
+    setEnableEdit(false);
+    showToast(` Data MCU tahun ${testYear} belum ada. Formulir baru siap diisi.`);
   };
 
   const handleDeleteRecord = (id: string) => {
@@ -582,6 +734,22 @@ export default function App() {
     showToast(`Berhasil mengimpor ${newRecords.length} data MCU ke Database.`);
   };
 
+ const handleLogout = () => {
+  try {
+    sessionStorage.clear(); // Bersihkan seluruh sesi penyimpanan
+    localStorage.removeItem('pusri_mcu_token');
+    localStorage.removeItem('pusri_mcu_user');
+    if (window.location.pathname !== '/login') {
+    window.history.replaceState(null, '', '/login');
+    }
+  } catch (e) {
+    console.error(e);
+  }
+  
+  setCurrentPage('LOGIN');
+  showToast('Anda telah keluar dari sesi. Silakan masuk kembali.');
+};
+
   const maleCount = records.filter(r => r.jenisKelamin === 'L').length;
   const femaleCount = records.filter(r => r.jenisKelamin === 'P').length;
   const fitCount = records.filter(r => r.hasilPemkes === 'Fit').length;
@@ -599,8 +767,20 @@ export default function App() {
     );
   }
   
-  if (currentPage === 'PORTAL') {
-    return <WelcomePortal onEnter={handleEnterMCU} />;
+  if (currentPage === 'LOGIN') {
+  return (
+    <Login
+      onLoginSuccess={handleLoginSuccess} 
+    />
+  );
+}
+
+if (currentPage === 'PORTAL') {
+    return (
+      <WelcomePortal 
+        onEnter={handleEnterMCU} 
+      />
+    );
   }
 
   if (currentPage === 'BADGE_ENTRY') {
@@ -659,6 +839,22 @@ export default function App() {
       </div>
     );
   }
+  // Cek apakah record aktif sudah tersimpan di database (mengabaikan draf lokal '0' atau 'MCU-...')
+  const isExistingRecord = records.some(
+    (r) =>
+      String(r.id) !== '0' &&
+      !String(r.id).startsWith('MCU-') &&
+      (String(r.id) === String(currentRecord.id) ||
+        (Boolean(r.badge && currentRecord.badge) &&
+          r.badge.toLowerCase() === currentRecord.badge.toLowerCase() &&
+          Boolean(r.isSpouse) === Boolean(currentRecord.isSpouse) &&
+          String(r.testTahun) === String(currentRecord.testTahun)))
+  );
+
+  // Aturan Edit:
+  // - Data baru (!isExistingRecord): selalu bisa diisi (true) oleh Admin maupun Dokter
+  // - Data lama (isExistingRecord): Dokter selalu terkunci (false); Admin terbuka jika mencentang enableEdit
+  const canEditForm = !isExistingRecord ? true : isAdmin && enableEdit;
 
   return (
     <div id="pusri-mcu-app" className="min-h-screen bg-slate-50 text-slate-900 flex flex-col md:flex-row font-sans selection:bg-blue-200">
@@ -731,16 +927,21 @@ export default function App() {
               id="nav-btn-input-mcu"
               type="button"
               onClick={() => {
+                setActiveSideMenu('MCU_INPUT');
                 setActiveTab('UMUM');
                 setMobileMenuOpen(false);
               }}
-              className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg bg-blue-600 text-white font-semibold shadow-sm shadow-blue-600/30 transition-all cursor-pointer"
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all cursor-pointer ${
+                activeSideMenu === 'MCU_INPUT'
+                  ? 'bg-blue-600 text-white font-semibold shadow-sm shadow-blue-600/30'
+                  : 'text-slate-700 hover:text-blue-700 hover:bg-blue-50 font-medium'
+              }`}
             >
               <div className="flex items-center gap-2.5">
-                <Stethoscope className="w-4 h-4 text-white" />
+                <Stethoscope className={`w-4 h-4 ${activeSideMenu === 'MCU_INPUT' ? 'text-white' : 'text-blue-600'}`} />
                 <span>Input MCU Detail</span>
               </div>
-              <ChevronRight className="w-3.5 h-3.5 opacity-80" />
+              {activeSideMenu === 'MCU_INPUT' && <ChevronRight className="w-3.5 h-3.5 opacity-80" />}
             </button>
 
             <button
@@ -757,32 +958,50 @@ export default function App() {
               </div>
             </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                handleOpenDatabase();
-                setMobileMenuOpen(false);
-              }}
-              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg font-medium transition-all cursor-pointer ${
-                isAdmin
-                  ? 'bg-emerald-50 border border-emerald-200 text-emerald-800 hover:bg-emerald-100'
-                  : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Database className={`w-4 h-4 ${isAdmin ? 'text-emerald-600' : 'text-slate-500'}`} />
-                <span>Database Pasien</span>
-              </div>
-              <div>
-                {isAdmin ? (
-                  <span className="text-[9px] bg-emerald-100 text-emerald-700 border border-emerald-300 px-1.5 py-0.5 rounded font-bold">
-                    Admin
-                  </span>
-                ) : (
-                  <Lock className="w-3.5 h-3.5 text-slate-400" />
-                )}
-              </div>
-            </button>
+          {/* MENU KHUSUS ADMIN: Hanya muncul jika role === 'admin' */}
+{isAdmin && (
+  <div className="pt-2 mt-2 border-t border-slate-200 space-y-1">
+    <div className="text-[10px] font-bold tracking-wider text-emerald-700 uppercase px-2 mb-1">
+      Menu Administrator
+    </div>
+
+    <button
+      type="button"
+      onClick={() => {
+        handleOpenDatabase(); // Langsung buka database pasien
+        setMobileMenuOpen(false);
+      }}
+      className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 hover:bg-emerald-100 font-medium transition-all cursor-pointer"
+    >
+      <div className="flex items-center gap-2.5">
+        <Database className="w-4 h-4 text-emerald-600" />
+        <span>Database Pasien</span>
+      </div>
+      <span className="text-[9px] bg-emerald-100 text-emerald-700 border border-emerald-300 px-1.5 py-0.5 rounded font-bold">
+        Admin
+      </span>
+    </button>
+
+    <button
+      type="button"
+      onClick={() => {
+        setActiveSideMenu('MASTER_DOCTORS'); // Langsung buka halaman Master Dokter
+        setMobileMenuOpen(false);
+      }}
+      className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg transition-all cursor-pointer ${
+        activeSideMenu === 'MASTER_DOCTORS'
+          ? 'bg-blue-600 text-white font-semibold shadow-sm shadow-blue-600/30'
+          : 'text-slate-700 hover:text-emerald-800 hover:bg-emerald-50 font-medium'
+      }`}
+    >
+      <div className="flex items-center gap-2.5">
+        <Stethoscope className={`w-4 h-4 ${activeSideMenu === 'MASTER_DOCTORS' ? 'text-white' : 'text-emerald-600'}`} />
+        <span>Master Data Dokter</span>
+      </div>
+      {activeSideMenu === 'MASTER_DOCTORS' && <ChevronRight className="w-3.5 h-3.5 opacity-80" />}
+    </button>
+  </div>
+)}  
 
             <button
               type="button"
@@ -852,67 +1071,16 @@ export default function App() {
               </div>
             </div>
 
-            {/* Admin Status Card */}
-            <div className={`mt-3 p-2.5 rounded-xl border flex items-center justify-between text-xs transition-colors shadow-2xs ${
-              isAdmin
-                ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                : 'bg-slate-50 border-slate-200 text-slate-600'
-            }`}>
-              <div className="flex items-center gap-2">
-                <div className={`p-1 rounded-md ${isAdmin ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200/80 text-slate-600'}`}>
-                  {isAdmin ? <ShieldCheck className="w-3.5 h-3.5" /> : <Lock className="w-3.5 h-3.5" />}
-                </div>
-                <div>
-                  <div className="text-[11px] font-bold text-slate-800">
-                    {isAdmin ? 'Admin Terverifikasi' : 'Akses Database Dikunci'}
-                  </div>
-                  <div className="text-[9px] text-slate-500">
-                    {isAdmin ? 'Akses penuh database' : 'Perlu PIN Admin'}
-                  </div>
-                </div>
-              </div>
-              {isAdmin ? (
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setIsChangePinOpen(true)}
-                    className="p-1 hover:bg-slate-200 text-slate-600 hover:text-amber-700 rounded border border-slate-200 cursor-pointer"
-                    title="Ubah PIN Admin"
-                  >
-                    <KeyRound className="w-3 h-3" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleLockAdmin}
-                    className="px-2 py-1 bg-amber-100 hover:bg-amber-200 text-[10px] font-bold text-amber-800 rounded border border-amber-300 cursor-pointer shadow-2xs"
-                    title="Kunci kembali sesi admin"
-                  >
-                    Kunci
-                  </button>
-                </div>
-              ) : (
-                <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => setIsAdminLoginOpen(true)}
-                    className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-[10px] font-bold text-white rounded shadow-xs cursor-pointer"
-                  >
-                    Login
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Tombol Kembali ke Halaman Depan / Portal */}
-            <button
-              type="button"
-              onClick={handleReturnToPortal}
-              className="w-full mt-2.5 flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-800 text-[11px] font-semibold border border-slate-200 transition-all cursor-pointer shadow-2xs"
-              title="Kembali ke Halaman Pembuka (Portal)"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>Keluar ke Halaman Depan</span>
-            </button>
+            {/* Tombol Keluar / Logout ke Halaman Login */}
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="w-full mt-2.5 flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 text-[11px] font-semibold border border-red-200 transition-all cursor-pointer shadow-2xs"
+            title="Keluar dari sesi dan kembali ke halaman login"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Keluar (Logout ke Login)</span>
+          </button>
           </div>
         </div>
 
@@ -920,22 +1088,29 @@ export default function App() {
 
       <div className="flex-1 flex flex-col min-w-0 overflow-y-auto">
         <main className="flex-1 max-w-6xl w-full mx-auto p-3 sm:p-5 lg:p-6 flex flex-col">
-          
+          {isAdmin && activeSideMenu === 'MASTER_DOCTORS' ? (
+            <DoctorManagerPage
+              onDoctorsUpdated={() => setDoctorsRefreshKey((prev) => prev + 1)}
+            />
+          ) : (
+            <>
           <HeaderNavbar
             currentRecord={currentRecord}
-            onChange={handleUpdateCurrentRecord}
-            enableEdit={enableEdit}
-            onToggleEdit={setEnableEdit}
-            onOpenReport={() => setIsReportOpen(true)}
-            onOpenExcelModal={handleOpenExcelImport}
-            onOpenDataList={handleOpenDatabase}
-            onOpenScheduleTracker={() => setIsScheduleTrackerOpen(true)}
-            savedRecords={records}
-            onSelectRecord={handleSelectRecordById}
-            onLoadPatientByBadge={handleLoadPatientByBadge}
-            onOpenBadgePage={handleOpenBadgePage}
-            isAdmin={isAdmin}
-            isCloudConnected={isCloudConnected}
+                onChange={handleUpdateCurrentRecord}
+                enableEdit={canEditForm}
+                onToggleEdit={setEnableEdit}
+                onOpenReport={() => setIsReportOpen(true)}
+                onOpenExcelModal={handleOpenExcelImport}
+                onOpenDataList={handleOpenDatabase}
+                onOpenScheduleTracker={() => setIsScheduleTrackerOpen(true)}
+                savedRecords={records}
+                onSelectRecord={handleSelectRecordById}
+                onLoadPatientByBadge={handleLoadPatientByBadge}
+                onOpenBadgePage={handleOpenBadgePage}
+                isAdmin={isAdmin}
+                isExistingRecord={isExistingRecord}
+                isCloudConnected={isCloudConnected}
+                doctorsRefreshKey={doctorsRefreshKey}
           />
 
           <ScheduleReminderBanner record={currentRecord} />
@@ -970,7 +1145,7 @@ export default function App() {
                 <TabUmum
                   data={currentRecord}
                   onChange={handleUpdateCurrentRecord}
-                  disabled={!enableEdit}
+                  disabled={!canEditForm}
                   onNextTab={handleNextTab}
                 />
               )}
@@ -979,7 +1154,7 @@ export default function App() {
                 <TabFisik
                   data={currentRecord}
                   onChange={handleUpdateCurrentRecord}
-                  disabled={!enableEdit}
+                  disabled={!canEditForm}
                   onNextTab={handleNextTab}
                   onPrevTab={handlePrevTab}
                 />
@@ -989,7 +1164,7 @@ export default function App() {
                 <TabFisik2
                   data={currentRecord}
                   onChange={handleUpdateCurrentRecord}
-                  disabled={!enableEdit}
+                  disabled={!canEditForm}
                   onNextTab={handleNextTab}
                   onPrevTab={handlePrevTab}
                 />
@@ -999,7 +1174,7 @@ export default function App() {
                 <TabLaboratorium
                   data={currentRecord}
                   onChange={handleUpdateCurrentRecord}
-                  disabled={!enableEdit}
+                  disabled={!canEditForm}
                   onNextTab={handleNextTab}
                   onPrevTab={handlePrevTab}
                 />
@@ -1009,7 +1184,7 @@ export default function App() {
                 <TabKimiaKlinik
                   data={currentRecord}
                   onChange={handleUpdateCurrentRecord}
-                  disabled={!enableEdit}
+                  disabled={!canEditForm}
                   onNextTab={handleNextTab}
                   onPrevTab={handlePrevTab}
                 />
@@ -1019,7 +1194,7 @@ export default function App() {
                 <TabSaranDr
                   data={currentRecord}
                   onChange={handleUpdateCurrentRecord}
-                  disabled={!enableEdit}
+                  disabled={!canEditForm}
                   onPrevTab={handlePrevTab}
                   onSaveData={handleSaveData}
                 />
@@ -1028,14 +1203,16 @@ export default function App() {
           </div>
 
           <BottomBar
-            data={currentRecord}
-            onChange={handleUpdateCurrentRecord}
-            onSaveData={handleSaveData}
-            onClearForm={handleClearForm}
-            onOpenReport={() => setIsReportOpen(true)}
-            onAutoGenerate={() => handleAutoGenerateTab('ALL')}
-            activeTab={activeTab}
+                data={currentRecord}
+                onChange={handleUpdateCurrentRecord}
+                onSaveData={handleSaveData}
+                onClearForm={handleClearForm}
+                onOpenReport={() => setIsReportOpen(true)}
+                onAutoGenerate={() => handleAutoGenerateTab('ALL')}
+                activeTab={activeTab}
           />
+          </>
+          )}
         </main>
 
         <footer className="py-3 text-center text-[11px] text-slate-500 bg-white border-t border-slate-200 mt-auto">
@@ -1074,7 +1251,10 @@ export default function App() {
           }
 
           try {
-            const res = await fetch(`${API_BASE_URL}/api/records/badge/${rec.badge.trim()}?id=${encodeURIComponent(rec.id)}&is_spouse=${rec.isSpouse || false}&test_tahun=${rec.testTahun || '2026'}`);
+            const res = await fetch(
+               `${API_BASE_URL}/api/records/badge/${rec.badge.trim()}?id=${encodeURIComponent(rec.id)}&is_spouse=${rec.isSpouse || false}&test_tahun=${rec.testTahun || '2026'}`,
+               { headers: getAuthHeaders() }
+          );
             const json = await res.json();
 
             if (json.success && json.data) {
@@ -1085,7 +1265,7 @@ export default function App() {
                 sessionStorage.setItem('pusri_active_mcu_badge', recordData.badge);
                 sessionStorage.setItem('pusri_active_mcu_is_spouse', String(recordData.isSpouse || false));
                 sessionStorage.setItem('pusri_active_mcu_year', recordData.testTahun || '2026');
-                showToast(`✅ Berhasil memuat data dari Database untuk Badge ${recordData.badge}`);
+                showToast(` Berhasil memuat data dari Database untuk Badge ${recordData.badge}`);
               } else {
                 setCurrentRecord(rec);
               }
@@ -1117,7 +1297,10 @@ export default function App() {
           }
 
           try {
-            const res = await fetch(`${API_BASE_URL}/api/records/badge/${rec.badge.trim()}?id=${encodeURIComponent(rec.id)}&is_spouse=${rec.isSpouse || false}&test_tahun=${rec.testTahun || '2026'}`);
+            const res = await fetch(
+              `${API_BASE_URL}/api/records/badge/${rec.badge.trim()}?id=${encodeURIComponent(rec.id)}&is_spouse=${rec.isSpouse || false}&test_tahun=${rec.testTahun || '2026'}`,
+              { headers: getAuthHeaders() }
+            );
             const json = await res.json();
 
             if (json.success && json.data) {
@@ -1174,7 +1357,7 @@ export default function App() {
         record={currentRecord}
         activeTab={activeTab}
         isSaving={isSavingRecord}
-        isExistingRecord={records.some((r) => r.id === currentRecord.id || (Boolean(r.badge && currentRecord.badge) && r.badge.toLowerCase() === currentRecord.badge.toLowerCase()))}
+        isExistingRecord={isExistingRecord}
       />
 
       <MySqlManagerModal

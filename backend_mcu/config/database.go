@@ -12,8 +12,14 @@ import (
 )
 
 type Config struct {
-	Port string
-	DSN  string
+	Port             string
+	DSN              string
+	SMTPHost         string
+	SMTPPort         string
+	SMTPUser         string
+	SMTPPass         string
+	SMTPFrom         string
+	FrontendResetURL string
 }
 
 func LoadConfig() Config {
@@ -30,8 +36,14 @@ func LoadConfig() Config {
 	)
 
 	return Config{
-		Port: getEnv("PORT", "8080"),
-		DSN:  dsn,
+		Port:             getEnv("PORT", "8080"),
+		DSN:              dsn,
+		SMTPHost:         getEnv("SMTP_HOST", "smtp.gmail.com"),
+		SMTPPort:         getEnv("SMTP_PORT", "587"),
+		SMTPUser:         os.Getenv("SMTP_USER"),
+		SMTPPass:         os.Getenv("SMTP_PASS"),
+		SMTPFrom:         getEnv("SMTP_FROM", os.Getenv("SMTP_USER")),
+		FrontendResetURL: getEnv("FRONTEND_RESET_URL", "http://localhost:3000/login"),
 	}
 }
 

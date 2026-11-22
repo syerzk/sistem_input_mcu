@@ -2,9 +2,10 @@ package handler
 
 import (
 	"backend_mcu/dto"
+	"backend_mcu/middleware"
+	"fmt"
 	"net/http"
 	"os"
-	"strings"
 )
 
 func SetupRouter(h *MCUHandler) http.Handler {
@@ -12,7 +13,10 @@ func SetupRouter(h *MCUHandler) http.Handler {
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
-			http.NotFound(w, r)
+			SendJSON(w, http.StatusNotFound, dto.JSONResponse{
+				Success: false,
+				Error:   fmt.Sprintf("Endpoint API tidak ditemukan: %s", r.URL.Path),
+			})
 			return
 		}
 		SendJSON(w, http.StatusOK, dto.JSONResponse{
@@ -21,26 +25,40 @@ func SetupRouter(h *MCUHandler) http.Handler {
 		})
 	})
 
-	mux.HandleFunc("/api/records/badge/", func(w http.ResponseWriter, r *http.Request) {
-		rawPath := strings.TrimPrefix(r.URL.Path, "/api/records/badge/")
-		badge := strings.TrimSuffix(rawPath, "/")
+	mux.HandleFunc("/api/health", h.HandleHealth)
+	mux.HandleFunc("/api/db/status", h.HandleHealth)
+	//endpoint publik
+	mux.HandleFunc("/api/auth/login", h.HandleSSOLogin)
+	mux.HandleFunc("/api/auth/verify-otp", h.HandleVerifyOTP)
+	mux.HandleFunc("/api/auth/forgot-password", h.HandleForgotPassword)
+	mux.HandleFunc("/api/auth/reset-password", h.HandleResetPassword)
 
+	// 2. ENDPOINT SEMUA ROLE LOGIN (admin, dokter, pegawai)
+	mux.HandleFunc("/api/records/badge", middleware.AuthMiddleware(h.HandleBadgeDispatcher))
+	mux.HandleFunc("/api/records/badge/", middleware.AuthMiddleware(h.HandleBadgeDispatcher))
+
+	mux.HandleFunc("/api/records", middleware.AuthMiddleware(h.HandleRecordsDispatcher))
+	mux.HandleFunc("/api/records/", middleware.AuthMiddleware(h.HandleRecordByIDDispatcher))
+
+	mux.HandleFunc("/api/doctors", middleware.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			h.HandleGetRecordByBadge(w, r, badge)
+			h.HandleGetDoctors(w, r)
+		} else if r.Method == http.MethodPost {
+			middleware.RequireRole("admin")(h.HandleCreateDoctor)(w, r)
 		} else {
 			SendJSON(w, http.StatusMethodNotAllowed, dto.JSONResponse{Success: false, Error: "Method tidak didukung"})
 		}
-	})
+	}))
 
-	mux.HandleFunc("/api/health", h.HandleHealth)
-	mux.HandleFunc("/api/db/status", h.HandleHealth)
-	mux.HandleFunc("/api/mysql/sync-badges", h.HandleBulkImport)
-	mux.HandleFunc("/api/auth/verify-pin", h.HandleVerifyPin)
-	mux.HandleFunc("/api/auth/change-pin", h.HandleChangePin)
-	mux.HandleFunc("/api/records", h.HandleRecordsDispatcher)
-	mux.HandleFunc("/api/records/", h.HandleRecordByIDDispatcher)
-	mux.HandleFunc("/api/records/bulk-import", h.HandleBulkImport)
-	mux.HandleFunc("/api/doctors", h.HandleGetDoctors)
+	// 3. ENDPOINT KHUSUS ADMIN (Diblokir jika role bukan "admin")
+	// Endpoint CRUD spesifik ID Dokter (PUT & DELETE) wajib ROLE ADMIN
+	adminOnly := middleware.RequireRole("admin")
+	mux.HandleFunc("/api/doctors/", adminOnly(h.HandleDoctorByIDDispatcher))
+
+	mux.HandleFunc("/api/mysql/sync-badges", adminOnly(h.HandleBulkImport))
+	mux.HandleFunc("/api/records/bulk-import", adminOnly(h.HandleBulkImport))
+	mux.HandleFunc("/api/auth/verify-pin", adminOnly(h.HandleVerifyPin))
+	mux.HandleFunc("/api/auth/change-pin", adminOnly(h.HandleChangePin))
 
 	return corsMiddleware(mux)
 }

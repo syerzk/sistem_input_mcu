@@ -4,6 +4,7 @@ import { SAMPLE_EMPLOYEES } from '../data/mockData';
 import { getInitialMCURecord, calculateNextMCUDueDate, formatIndonesianDate } from '../utils/mcuHelpers';
 import { RsPusriLogo } from './RsPusriLogo';
 import { API_BASE_URL } from '../config/api';
+import { getAuthHeaders } from '../utils/adminAuth';
 import {
   Search,
   ArrowRight,
@@ -94,15 +95,28 @@ const handleProceed = async () => {
         const testYear = matchedSavedRecord.testTahun || String(new Date().getFullYear());
 
         // Gunakan effectiveSearchedBadge untuk memanggil API Go Backend kamu
-        const res = await fetch(`${API_BASE_URL}/api/records/badge/${effectiveSearchedBadge}?is_spouse=${isSpouse}&test_tahun=${testYear}`);
+        const res = await fetch(`${API_BASE_URL}/api/records/badge/${effectiveSearchedBadge}?is_spouse=${isSpouse}&test_tahun=${testYear}`,
+        { headers: getAuthHeaders() }  
+        );
         const json = await res.json();
         if (json.success && json.data) {
-          const recordData = json.data.mcuRecord || json.data;
-          if (recordData) {
-            onProceedToDetail(recordData);
-            return;
-          }
+        
+        const recordData = json.data.mcuRecord || json.data;
+        if (recordData) {
+          const recIdStr = String(recordData.id ?? '').trim();
+          const hasValidDbId =
+            recIdStr !== '' &&
+            recIdStr !== '0' &&
+            !recIdStr.toUpperCase().startsWith('MCU-');
+
+         onProceedToDetail(
+            hasValidDbId && !recordData.testTahun
+              ? { ...recordData, testTahun: String(new Date().getFullYear()) }
+              : recordData
+          );
+          return;
         }
+      }
       } catch (e) {
         console.error(e);
       }
@@ -114,7 +128,9 @@ const handleProceed = async () => {
       // Ambil dari Backend berdasarkan badge untuk tahun berjalan
       const currentYear = new Date().getFullYear();
       // Gunakan effectiveSearchedBadge
-      const res = await fetch(`${API_BASE_URL}/api/records/badge/${effectiveSearchedBadge}?is_spouse=false&test_tahun=${currentYear}`);
+      const res = await fetch(`${API_BASE_URL}/api/records/badge/${effectiveSearchedBadge}?is_spouse=false&test_tahun=${currentYear}`,
+      { headers: getAuthHeaders() }  
+      );
       const json = await res.json();
 
       if (json.success && json.data) {
@@ -157,12 +173,12 @@ const handleProceed = async () => {
       return;
     }
 
-    // Jika badge baru kustom
+    // Jika badge baru kustom (gunakan id: '0' sebagai penanda draf baru belum tersimpan di DB)
     const todayStr = new Date().toISOString().split('T')[0];
     const currentYear = new Date().getFullYear();
     const newRec: MCURecord = {
       ...getInitialMCURecord(),
-      id: `MCU-${currentYear}-${trimmedBadge}`,
+      id: '0',
       badge: trimmedBadge,
       nama: '',
       tanggal: todayStr,
@@ -559,7 +575,9 @@ const handleProceed = async () => {
     }
     const trimmedBadge = emp.badge.trim();
     try {
-      const res = await fetch(`${API_BASE_URL}/api/records/badge/${trimmedBadge}`);
+      const res = await fetch(`${API_BASE_URL}/api/records/badge/${trimmedBadge}`,
+       { headers: getAuthHeaders() } 
+      );
       const json = await res.json();
 
       if (json.success && json.data) {

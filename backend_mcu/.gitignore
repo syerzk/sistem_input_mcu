@@ -1,7 +1,4 @@
-#File Konfigurasi
-.env
-.env.local
-*.env
+
 
 # File Hasil Build 
 *.exe

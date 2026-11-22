@@ -1,19 +1,97 @@
 import { verifyAdminPinMySql, changeAdminPinMySql } from '../services/Service';
+import { AuthSession, UserRole } from '../types';
 
 export const STORAGE_KEY_PIN = 'pusri_admin_pin';
 export const STORAGE_KEY_SESSION = 'pusri_admin_auth';
-export const DEFAULT_ADMIN_PIN = 'Noisy1122';
+export const STORAGE_KEY_AUTH_SESSION = 'pusri_mcu_auth_session';
+export const DEFAULT_ADMIN_PIN = '';
+
+// --- MANAJEMEN SESI RBAC (TOKEN JWT + ROLE) ---
+
+export function getAuthSession(): AuthSession | null {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY_AUTH_SESSION);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AuthSession;
+    if (parsed && parsed.token && parsed.role) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function setAuthSession(session: AuthSession | null): void {
+  try {
+    if (session) {
+      sessionStorage.setItem(STORAGE_KEY_AUTH_SESSION, JSON.stringify(session));
+      if (session.role === 'admin') {
+        sessionStorage.setItem(STORAGE_KEY_SESSION, 'true');
+      } else {
+        sessionStorage.removeItem(STORAGE_KEY_SESSION);
+      }
+    } else {
+      sessionStorage.removeItem(STORAGE_KEY_AUTH_SESSION);
+      sessionStorage.removeItem(STORAGE_KEY_SESSION);
+    }
+  } catch (e) {
+    console.error('Failed to save auth session', e);
+  }
+}
+
+export function clearAuthSession(): void {
+  setAuthSession(null);
+}
+
+export function getAuthToken(): string | null {
+  // 1. Cek dari session storage dulu
+  const sessionToken = getAuthSession()?.token;
+  if (sessionToken) return sessionToken;
+
+  // 2. WAJIB fallback ke localStorage karena Login.tsx menyimpan token di situ
+  try {
+    const localToken = localStorage.getItem('pusri_mcu_token');
+    if (localToken) return localToken;
+  } catch {}
+
+  return null;
+}
+
+export function getUserRole(): UserRole | null {
+  const session = getAuthSession();
+  if (session?.role) return session.role;
+  if (isAdminSessionActive()) return 'admin';
+  return null;
+}
+
+export function isAdminRole(): boolean {
+  return getUserRole() === 'admin';
+}
+
+export function getAuthHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  const token = getAuthToken();
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+// --- KOMPATIBILITAS FUNGSI PIN LAMA (TRANSISI KE LANGKAH 3) ---
 
 function getLocalAdminPin(): string {
   try {
     const saved = localStorage.getItem(STORAGE_KEY_PIN);
     if (!saved || !saved.trim() || saved.trim() === 'admin123') {
-      localStorage.setItem(STORAGE_KEY_PIN, DEFAULT_ADMIN_PIN);
-      return DEFAULT_ADMIN_PIN;
+      localStorage.removeItem(STORAGE_KEY_PIN);
+      return '';
     }
     return saved.trim();
   } catch {
-    return DEFAULT_ADMIN_PIN;
+    return '';
   }
 }
 
@@ -30,11 +108,7 @@ export function subscribeToPinChanges(listener: (pin: string) => void): () => vo
 
 export function getAdminPin(): string {
   const local = getLocalAdminPin();
-  if (local) {
-    activeAdminPin = local;
-  } else {
-    activeAdminPin = DEFAULT_ADMIN_PIN;
-  }
+  activeAdminPin = local || DEFAULT_ADMIN_PIN;
   return activeAdminPin;
 }
 
@@ -45,84 +119,55 @@ export function isCustomPinSet(): boolean {
 
 export async function setAdminPin(newPin: string): Promise<void> {
   const cleanPin = newPin.trim();
-  if (!cleanPin) {
-    throw new Error('PIN tidak boleh kosong');
-  }
-
+  if (!cleanPin) throw new Error('PIN tidak boleh kosong');
   activeAdminPin = cleanPin;
   try {
     localStorage.setItem(STORAGE_KEY_PIN, cleanPin);
   } catch (e) {
     console.error('Failed to save admin PIN locally', e);
   }
-
-  // Update langsung ke database MySQL
   try {
     await changeAdminPinMySql(cleanPin);
   } catch (e) {
     console.warn('Could not update pin in MySQL:', e);
   }
-
-  pinChangeListeners.forEach(listener => {
-    try { listener(cleanPin); } catch (err) { console.error(err); }
+  pinChangeListeners.forEach((listener) => {
+    try {
+      listener(cleanPin);
+    } catch (err) {
+      console.error(err);
+    }
   });
 }
 
 export async function resetAdminPinToDefault(): Promise<void> {
-  activeAdminPin = DEFAULT_ADMIN_PIN;
+  activeAdminPin = '';
   try {
-    localStorage.setItem(STORAGE_KEY_PIN, DEFAULT_ADMIN_PIN);
+    localStorage.removeItem(STORAGE_KEY_PIN);
   } catch (e) {
     console.error('Failed to reset admin PIN locally', e);
   }
-
-  // Reset ke database MySQL
-  try {
-    await changeAdminPinMySql(DEFAULT_ADMIN_PIN);
-  } catch (e) {
-    console.warn('Could not reset pin in MySQL:', e);
-  }
-
-  pinChangeListeners.forEach(listener => {
-    try { listener(DEFAULT_ADMIN_PIN); } catch (err) { console.error(err); }
+  pinChangeListeners.forEach((listener) => {
+    try {
+      listener('');
+    } catch (err) {
+      console.error(err);
+    }
   });
 }
 
-/**
- * Verifikasi PIN secara sinkron
- */
 export function verifyAdminPin(inputPin: string): boolean {
   const cleanInput = inputPin.trim();
-  if (!cleanInput) return false;
-
-  if (cleanInput === 'admin123') {
-    return false;
-  }
-
+  if (!cleanInput || cleanInput === 'admin123') return false;
   const currentPin = getAdminPin();
-  
-  if (cleanInput === DEFAULT_ADMIN_PIN) {
-    return true;
-  }
-
-  if (currentPin && currentPin !== 'admin123' && cleanInput === currentPin) {
-    return true;
-  }
-
+  if (currentPin && currentPin !== 'admin123' && cleanInput === currentPin) return true;
   return false;
 }
 
-/**
- * Verifikasi PIN secara asinkron dengan mengecek langsung ke endpoint MySQL backend
- */
 export async function verifyAdminPinAsync(inputPin: string): Promise<boolean> {
   const cleanInput = inputPin.trim();
   if (!cleanInput) return false;
-
-  if (verifyAdminPin(cleanInput)) {
-    return true;
-  }
-
+  if (verifyAdminPin(cleanInput)) return true;
   try {
     const isMySqlValid = await verifyAdminPinMySql(cleanInput);
     if (isMySqlValid) {
@@ -135,7 +180,6 @@ export async function verifyAdminPinAsync(inputPin: string): Promise<boolean> {
   } catch (err) {
     console.warn('MySQL pin verification check failed:', err);
   }
-
   return false;
 }
 

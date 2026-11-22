@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"backend_mcu/dto"
+	"backend_mcu/middleware"
 	"backend_mcu/model"
 	"backend_mcu/repository"
 	"backend_mcu/service"
@@ -154,6 +155,23 @@ func (h *MCUHandler) HandleGetRecords(w http.ResponseWriter, r *http.Request) {
 	}
 
 	SendJSON(w, http.StatusOK, dto.JSONResponse{Success: true, Data: unifiedList})
+}
+
+func (h *MCUHandler) HandleBadgeDispatcher(w http.ResponseWriter, r *http.Request) {
+	rawPath := strings.TrimPrefix(r.URL.Path, "/api/records/badge")
+	rawPath = strings.TrimPrefix(rawPath, "/")
+	badge := strings.TrimSuffix(rawPath, "/")
+
+	if badge == "" {
+		SendJSON(w, http.StatusBadRequest, dto.JSONResponse{Success: false, Error: "Nomor badge diperlukan"})
+		return
+	}
+
+	if r.Method == http.MethodGet {
+		h.HandleGetRecordByBadge(w, r, badge)
+	} else {
+		SendJSON(w, http.StatusMethodNotAllowed, dto.JSONResponse{Success: false, Error: "Method tidak didukung"})
+	}
 }
 
 func (h *MCUHandler) HandleGetRecordByBadge(w http.ResponseWriter, r *http.Request, badge string) {
@@ -374,7 +392,11 @@ func (h *MCUHandler) HandleSaveRecord(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 	var req dto.FrontendMCURequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		SendJSON(w, http.StatusBadRequest, dto.JSONResponse{Success: false, Error: "Format JSON salah"})
+		fmt.Println("ERROR DECODE JSON POST /api/records:", err) // <-- Cetak ke log Docker
+		SendJSON(w, http.StatusBadRequest, dto.JSONResponse{
+			Success: false,
+			Error:   "Format JSON salah: " + err.Error(), // <-- Kirim detail ke browser
+		})
 		return
 	}
 
@@ -529,6 +551,12 @@ func (h *MCUHandler) HandleSaveRecord(w http.ResponseWriter, r *http.Request) {
 				EmployeeID:  emp.ID,
 				TestTahun:   testYearInt,
 				PatientType: patientType,
+			}
+		} else {
+			//data sudah ada di database
+			userRole, _ := r.Context().Value(middleware.ContextRoleKey).(string)
+			if userRole != "admin" {
+				return fmt.Errorf("FORBIDDEN: Dokter tidak memiliki wewenang mengubah rekam medis yang sudah tersimpan")
 			}
 		}
 
@@ -866,6 +894,10 @@ func (h *MCUHandler) HandleSaveRecord(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if err != nil {
+		if strings.HasPrefix(err.Error(), "FORBIDDEN:") {
+			SendJSON(w, http.StatusForbidden, dto.JSONResponse{Success: false, Error: err.Error()})
+			return
+		}
 		SendJSON(w, http.StatusInternalServerError, dto.JSONResponse{Success: false, Error: err.Error()})
 		return
 	}
@@ -1084,12 +1116,178 @@ func (h *MCUHandler) HandleRecordByIDDispatcher(w http.ResponseWriter, r *http.R
 	}
 }
 
+type doctorPayload struct {
+	Nama      string `json:"nama"`
+	Spesialis string `json:"spesialis"`
+	IsActive  *bool  `json:"isActive"`
+}
+
 func (h *MCUHandler) HandleGetDoctors(w http.ResponseWriter, r *http.Request) {
-	doctors, err := h.doctorRepo.FindAllActiveDoctors()
+	showAll := r.URL.Query().Get("all") == "true"
+
+	var (
+		doctors []model.Doctor
+		err     error
+	)
+	if showAll {
+		doctors, err = h.doctorRepo.FindAllDoctors()
+	} else {
+		doctors, err = h.doctorRepo.FindAllActiveDoctors()
+	}
+
 	if err != nil {
 		SendJSON(w, http.StatusInternalServerError, dto.JSONResponse{Success: false, Error: err.Error()})
 		return
 	}
 	SendJSON(w, http.StatusOK, dto.JSONResponse{Success: true, Data: doctors})
+}
 
+func (h *MCUHandler) HandleCreateDoctor(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req doctorPayload
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendJSON(w, http.StatusBadRequest, dto.JSONResponse{Success: false, Error: "Format JSON tidak valid"})
+		return
+	}
+
+	cleanNama := strings.TrimSpace(req.Nama)
+	if cleanNama == "" {
+		SendJSON(w, http.StatusBadRequest, dto.JSONResponse{Success: false, Error: "Nama dokter wajib diisi"})
+		return
+	}
+
+	var existingCount int64
+	h.db.Model(&model.Doctor{}).Where("LOWER(nama) = ?", strings.ToLower(cleanNama)).Count(&existingCount)
+	if existingCount > 0 {
+		SendJSON(w, http.StatusConflict, dto.JSONResponse{Success: false, Error: "Dokter dengan nama tersebut sudah terdaftar"})
+		return
+	}
+
+	spesialis := strings.TrimSpace(req.Spesialis)
+	if spesialis == "" {
+		spesialis = "Dokter Pemeriksa MCU"
+	}
+
+	isActive := true
+	if req.IsActive != nil {
+		isActive = *req.IsActive
+	}
+
+	newDoc := model.Doctor{
+		Nama:      cleanNama,
+		Spesialis: spesialis,
+		IsActive:  isActive,
+	}
+
+	if err := h.doctorRepo.CreateDoctor(&newDoc); err != nil {
+		SendJSON(w, http.StatusInternalServerError, dto.JSONResponse{Success: false, Error: "Gagal menyimpan data dokter: " + err.Error()})
+		return
+	}
+
+	h.RecordAudit(r, "CREATE_DOCTOR", "-", fmt.Sprintf("%d", newDoc.ID), "Menambah Master Dokter: "+newDoc.Nama)
+	SendJSON(w, http.StatusCreated, dto.JSONResponse{
+		Success: true,
+		Message: "Data dokter berhasil ditambahkan",
+		Data:    newDoc,
+	})
+}
+
+func (h *MCUHandler) HandleUpdateDoctor(w http.ResponseWriter, r *http.Request, id string) {
+	docID := uint(h.service.ParseToInt(id))
+	if docID == 0 {
+		SendJSON(w, http.StatusBadRequest, dto.JSONResponse{Success: false, Error: "ID dokter tidak valid"})
+		return
+	}
+
+	existingDoc, err := h.doctorRepo.FindDoctorByID(docID)
+	if err != nil {
+		SendJSON(w, http.StatusNotFound, dto.JSONResponse{Success: false, Error: "Data dokter tidak ditemukan"})
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req doctorPayload
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		SendJSON(w, http.StatusBadRequest, dto.JSONResponse{Success: false, Error: "Format JSON tidak valid"})
+		return
+	}
+
+	cleanNama := strings.TrimSpace(req.Nama)
+	if cleanNama == "" {
+		SendJSON(w, http.StatusBadRequest, dto.JSONResponse{Success: false, Error: "Nama dokter wajib diisi"})
+		return
+	}
+
+	existingDoc.Nama = cleanNama
+	if strings.TrimSpace(req.Spesialis) != "" {
+		existingDoc.Spesialis = strings.TrimSpace(req.Spesialis)
+	}
+	if req.IsActive != nil {
+		existingDoc.IsActive = *req.IsActive
+	}
+
+	if err := h.doctorRepo.UpdateDoctor(&existingDoc); err != nil {
+		SendJSON(w, http.StatusInternalServerError, dto.JSONResponse{Success: false, Error: "Gagal memperbarui data dokter: " + err.Error()})
+		return
+	}
+
+	h.RecordAudit(r, "UPDATE_DOCTOR", "-", id, "Memperbarui Master Dokter: "+existingDoc.Nama)
+	SendJSON(w, http.StatusOK, dto.JSONResponse{
+		Success: true,
+		Message: "Data dokter berhasil diperbarui",
+		Data:    existingDoc,
+	})
+}
+
+func (h *MCUHandler) HandleDeleteDoctor(w http.ResponseWriter, r *http.Request, id string) {
+	docID := uint(h.service.ParseToInt(id))
+	if docID == 0 {
+		SendJSON(w, http.StatusBadRequest, dto.JSONResponse{Success: false, Error: "ID dokter tidak valid"})
+		return
+	}
+
+	existingDoc, err := h.doctorRepo.FindDoctorByID(docID)
+	if err != nil {
+		SendJSON(w, http.StatusNotFound, dto.JSONResponse{Success: false, Error: "Data dokter tidak ditemukan"})
+		return
+	}
+
+	if err := h.doctorRepo.DeleteDoctor(docID); err != nil {
+		SendJSON(w, http.StatusInternalServerError, dto.JSONResponse{Success: false, Error: "Gagal menghapus data dokter: " + err.Error()})
+		return
+	}
+
+	h.RecordAudit(r, "DELETE_DOCTOR", "-", id, "Menghapus Master Dokter: "+existingDoc.Nama)
+	SendJSON(w, http.StatusOK, dto.JSONResponse{
+		Success: true,
+		Message: "Data dokter berhasil dihapus",
+	})
+}
+
+func (h *MCUHandler) HandleDoctorsDispatcher(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.HandleGetDoctors(w, r)
+	case http.MethodPost:
+		middleware.RequireRole("admin")(h.HandleCreateDoctor)(w, r)
+	default:
+		SendJSON(w, http.StatusMethodNotAllowed, dto.JSONResponse{Success: false, Error: "Method tidak didukung"})
+	}
+}
+
+func (h *MCUHandler) HandleDoctorByIDDispatcher(w http.ResponseWriter, r *http.Request) {
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/doctors/"), "/")
+	if id == "" {
+		SendJSON(w, http.StatusBadRequest, dto.JSONResponse{Success: false, Error: "ID dokter diperlukan"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPut:
+		h.HandleUpdateDoctor(w, r, id)
+	case http.MethodDelete:
+		h.HandleDeleteDoctor(w, r, id)
+	default:
+		SendJSON(w, http.StatusMethodNotAllowed, dto.JSONResponse{Success: false, Error: "Method tidak didukung"})
+	}
 }

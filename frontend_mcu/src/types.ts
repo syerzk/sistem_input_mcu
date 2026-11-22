@@ -4,6 +4,15 @@ export type BloodType = 'A' | 'B' | 'AB' | 'O' | 'Belum Tahu';
 export type RhesusType = '+' | '-' | 'Unknown';
 export type FitnessStatus = 'Fit' | 'Fit with Note' | 'Temporary Unfit' | 'Unfit';
 
+export type UserRole = 'admin' | 'dokter' | 'pegawai';
+
+export interface AuthSession {
+  token: string;
+  username: string;
+  nama: string;
+  role: UserRole;
+}
+
 export interface Employee {
   badge: string;
   nama: string;

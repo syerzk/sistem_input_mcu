@@ -6,6 +6,7 @@ import { Search } from 'lucide-react';
 import { ModernDatePicker } from './ModernDatePicker';
 import { ModernYearPicker } from './ModernYearPicker';
 import { API_BASE_URL } from '../config/api';
+import { getAuthHeaders } from '../utils/adminAuth';
 
 interface HeaderNavbarProps {
   currentRecord: MCURecord;
@@ -22,6 +23,8 @@ interface HeaderNavbarProps {
   onOpenBadgePage?: () => void;
   isAdmin?: boolean;
   isCloudConnected?: boolean;
+  isExistingRecord?: boolean;
+  doctorsRefreshKey?: number;
 }
 
 export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
@@ -38,7 +41,10 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
   onLoadPatientByBadge,
   onOpenBadgePage,
   isAdmin = false,
-  isCloudConnected = true
+  isExistingRecord = false,
+  isCloudConnected = true,
+  doctorsRefreshKey = 0
+
 }) => {
   const [badgeSearchFeedback, setBadgeSearchFeedback] = useState<string | null>(null);
   
@@ -116,13 +122,14 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
   };
   
   const [doctorsList, setDoctorsList] = useState<string[]>(DOCTORS_LIST);
-  const [isCustomDoctor, setIsCustomDoctor] = useState<boolean>(false);
-  const [customDoctorInput, setCustomDoctorInput] = useState<string>('');
+ 
 
   useEffect(() => {
     const fetchDoctors = async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/doctors`);
+       const res = await fetch(`${API_BASE_URL}/api/doctors`, {
+          headers: getAuthHeaders()
+        });
         const json = await res.json();
         if (json.success && Array.isArray(json.data) && json.data.length > 0) {
           const dbDoctorNames = json.data.map((d: { nama: string }) => d.nama);
@@ -136,7 +143,7 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
       }
     };
     fetchDoctors();
-  }, []);
+  }, [doctorsRefreshKey]);
   
 
   const handleGenderChange = (newGender: Gender) => {
@@ -172,6 +179,13 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
       testTahun: newYear,
       ...(updatedTanggal ? { tanggal: updatedTanggal, tanggalMCUBerikutnya: nextDate } : {})
     });
+
+    // Jika sedang Mode Baca (disabled) atau badge sudah terisi, langsung muat riwayat tahun yang dipilih
+    if (badgeInput.trim() && onLoadPatientByBadge) {
+      setTimeout(() => {
+        onLoadPatientByBadge(badgeInput.trim());
+      }, 50);
+    }
   };
 
   return (
@@ -200,16 +214,28 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 border border-slate-300 rounded-lg text-xs font-bold text-slate-700 cursor-pointer select-none hover:bg-slate-200 transition-colors">
-            <input
-              id="checkbox-enable-edit"
-              type="checkbox"
-              checked={enableEdit}
-              onChange={(e) => onToggleEdit(e.target.checked)}
-              className="w-4 h-4 text-blue-600 rounded border-slate-400 cursor-pointer focus:ring-blue-500"
-            />
-            <span>Enable Edit</span>
-          </label>
+        {isExistingRecord ? (
+          isAdmin ? (
+            <label className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 border border-slate-300 rounded-lg text-xs font-bold text-slate-700 cursor-pointer select-none hover:bg-slate-200 transition-colors">
+                <input
+                  id="checkbox-enable-edit"
+                  type="checkbox"
+                  checked={enableEdit}
+                  onChange={(e) => onToggleEdit(e.target.checked)}
+                  className="w-4 h-4 text-blue-600 rounded border-slate-400 cursor-pointer focus:ring-blue-500"
+                />
+                <span>Enable Edit</span>
+              </label>
+            ) : (
+              <span className="px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-lg text-xs font-bold text-amber-800 select-none">
+                Mode Baca (Dokter)
+              </span>
+            )
+          ) : (
+            <span className="px-3 py-1.5 bg-emerald-50 border border-emerald-200 rounded-lg text-xs font-bold text-emerald-700 select-none">
+              Input Rekam Medis Baru
+            </span>
+          )}
         </div>
       </div>
 
@@ -232,7 +258,6 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
               <input
                 id="input-badge"
                 type="text"
-                disabled={!enableEdit}
                 value={badgeInput}
                 onChange={(e) => setBadgeInput(e.target.value)}
                 onKeyDown={(e) => {
@@ -292,7 +317,7 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
               <input
                 id="checkbox-istri-suami"
                 type="checkbox"
-                disabled={!enableEdit}
+                
                 checked={currentRecord.isSpouse}
                 onChange={(e) => {
                   const isChecked = e.target.checked; 
@@ -322,7 +347,7 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
             </label>
             <ModernYearPicker
               id="input-test-tahun"
-              disabled={!enableEdit}
+              
               value={currentRecord.testTahun}
               onChange={handleYearChange}
               align="center"
@@ -421,64 +446,29 @@ export const HeaderNavbar: React.FC<HeaderNavbarProps> = ({
             </div>
           </div>
 
-          <div className="md:col-span-3">
-            <label htmlFor="select-dokter" className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-              DOKTER PEMERIKSA
-            </label>
-            
-            {!isCustomDoctor ? (
-            <select
-                id="select-dokter"
-                disabled={!enableEdit}
-                value={currentRecord.dokter || ''}
-                onChange={(e) => {
-                  if (e.target.value === '__CUSTOM__') {
-                    setIsCustomDoctor(true);
-                    setCustomDoctorInput('');
-                  } else {
-                    onChange({ dokter: e.target.value });
-                  }
-                }}
-                className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-semibold text-slate-900 text-xs focus:ring-2 focus:ring-blue-500/20 focus:border-blue-600 disabled:bg-slate-100 cursor-pointer truncate"
-              >
-                <option value="">-- Pilih Dokter --</option>
-                {doctorsList.map((doc) => (
-                  <option key={doc} value={doc}>
-                    {doc}
-                  </option>
-                ))}
-                <option value="__CUSTOM__" className="font-bold text-blue-600">
-                  + Input Dokter Manual...
-                </option>
-              </select>
-            ) : (
-              <div className="flex items-center gap-1">
-                <input
-                  type="text"
-                  disabled={!enableEdit}
-                  value={customDoctorInput}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setCustomDoctorInput(val);
-                    onChange({ dokter: val });
-                  }}
-                  placeholder="Ketik Nama Dokter..."
-                  className="w-full px-2.5 py-1.5 bg-white border border-blue-400 rounded-lg font-bold text-slate-900 text-xs focus:ring-2 focus:ring-blue-500/20"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsCustomDoctor(false);
-                  }}
-                  className="px-2 py-1.5 bg-slate-200 text-slate-700 rounded-lg text-xs font-bold hover:bg-slate-300 cursor-pointer shrink-0"
-                  title="Kembali ke List Pilihan"
-                >
-                  List
-                </button>
-              </div>
+        <div className="md:col-span-3">
+          <label htmlFor="select-dokter" className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+            DOKTER PEMERIKSA
+          </label>
+          <select
+            id="select-dokter"
+            disabled={!enableEdit}
+            value={currentRecord.dokter || ''}
+            onChange={(e) => onChange({ dokter: e.target.value })}
+            className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-semibold text-slate-900 text-xs focus:ring-2 focus:ring-blue-500/20 focus:border-blue-600 disabled:bg-slate-100 cursor-pointer truncate"
+          >
+            <option value="">-- Pilih Dokter --</option>
+            {currentRecord.dokter && !doctorsList.includes(currentRecord.dokter) && (
+              <option value={currentRecord.dokter}>{currentRecord.dokter}</option>
             )}
-          </div>
 
+            {doctorsList.map((doc) => (
+              <option key={doc} value={doc}>
+                {doc}
+              </option>
+            ))}
+          </select>
+        </div>  
         </div>
 
         <div className="pt-2 border-t border-slate-200/80">

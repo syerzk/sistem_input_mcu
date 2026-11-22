@@ -1,6 +1,7 @@
 import { MCURecord, Employee } from '../types';
 import { SAMPLE_EMPLOYEES } from '../data/mockData';
 import { API_BASE_URL } from '../config/api';
+import { getAuthHeaders } from '../utils/adminAuth'; // 👈 Wajib agar lolos AuthMiddleware di backend
 
 export interface MySqlStatus {
   success: boolean;
@@ -16,7 +17,7 @@ export interface MySqlStatus {
 }
 
 /**
- * Cek status koneksi server ke database MySQL
+ * 1. Cek status koneksi server ke database MySQL (Endpoint Publik / Health)
  */
 export async function checkMySqlStatus(): Promise<MySqlStatus> {
   try {
@@ -40,6 +41,10 @@ export async function checkMySqlStatus(): Promise<MySqlStatus> {
     };
   }
 }
+
+/**
+ * 2. Konfigurasi Koneksi MySQL (Dilindungi Middleware Admin)[cite: 3, 12]
+ */
 export async function configureMySqlConnection(config: {
   host?: string;
   port?: number;
@@ -50,7 +55,10 @@ export async function configureMySqlConnection(config: {
   try {
     const res = await fetch(`${API_BASE_URL}/api/db/configure`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        ...getAuthHeaders() // 👈 Membawa token JWT
+      },
       body: JSON.stringify(config)
     });
     return await res.json();
@@ -70,7 +78,7 @@ export async function configureMySqlConnection(config: {
 }
 
 /**
- * Re-connect / test koneksi ke MySQL
+ * 3. Re-connect / test koneksi ke MySQL
  */
 export async function reconnectMySql(): Promise<boolean> {
   try {
@@ -81,9 +89,89 @@ export async function reconnectMySql(): Promise<boolean> {
   }
 }
 
+/**
+ * Permintaan Pemberitahuan / Instruksi Lupa Kata Sandi via Email (Endpoint Publik)
+ */
+export async function requestPasswordResetEmail(
+  email: string
+): Promise<{ success: boolean; message?: string; error?: string }> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/auth/forgot-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email: email.trim() }),
+    });
+    const json = await res.json();
+    if (!res.ok || !json.success) {
+      return {
+        success: false,
+        error: json.error || 'Gagal memproses permintaan pemulihan kata sandi.',
+      };
+    }
+    return {
+      success: true,
+      message:
+        json.message ||
+        'Jika email terdaftar pada sistem, pemberitahuan dan instruksi pemulihan kata sandi telah dikirimkan.',
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'Tidak dapat terhubung ke server backend (Port 8080).',
+    };
+  }
+}
+
+/**
+ * Konfirmasi & Simpan Kata Sandi Baru Menggunakan Token dari Email (Endpoint Publik)
+ */
+export async function submitPasswordReset(
+  token: string,
+  newPassword: string
+): Promise<{ success: boolean; message?: string; error?: string }> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/auth/reset-password`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ token: token.trim(), newPassword }),
+    });
+    const json = await res.json();
+    if (!res.ok || !json.success) {
+      return {
+        success: false,
+        error: json.error || 'Gagal memperbarui kata sandi.',
+      };
+    }
+    return {
+      success: true,
+      message:
+        json.message ||
+        'Kata sandi berhasil diperbarui. Silakan masuk menggunakan kata sandi baru Anda.',
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: err?.message || 'Tidak dapat terhubung ke server backend (Port 8080).',
+    };
+  }
+}
+
+/**
+ * 4. Ambil Seluruh Data Rekam Medis dari MySQL (Dilindungi Middleware)[cite: 3, 12]
+ */
 export async function fetchMySqlRecords(): Promise<MCURecord[]> {
   try {
-    const res = await fetch(`${API_BASE_URL}/api/records`);
+    const res = await fetch(`${API_BASE_URL}/api/records`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(), // 👈 Membawa token JWT agar tidak 401
+      }
+    });
     if (!res.ok) throw new Error('Gagal mengambil data dari MySQL');
     const json = await res.json();
     return json.data || [];
@@ -94,30 +182,66 @@ export async function fetchMySqlRecords(): Promise<MCURecord[]> {
 }
 
 /**
- * Simpan / perbarui rekam medis ke MySQL
+ * 5. Ambil Rekam Medis Spesifik Berdasarkan Nomor Badge & Tahun (Dilindungi Middleware)
+ */
+export async function getRecordByBadge(badge: string, isSpouse: boolean, testTahun: number): Promise<any> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/records/badge/${badge}?is_spouse=${isSpouse}&test_tahun=${testTahun}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(), // 👈 Wajib ada agar route /api/records/badge/ tidak 401 Unauthorized
+      }
+    });
+    if (!res.ok) throw new Error('Gagal mengambil data rekam medis badge');
+    const json = await res.json();
+    return json.data;
+  } catch (err) {
+    console.error('[MySQL Service] Gagal fetch record by badge:', err);
+    return null;
+  }
+}
+
+/**
+ * 6. Simpan / Perbarui Rekam Medis ke MySQL (Dilindungi Middleware)[cite: 3, 12]
  */
 export async function saveMySqlRecord(record: MCURecord): Promise<boolean> {
   try {
+    const safePayload = {
+      ...record,
+      umur: Number(record.umur) || 0,
+      testTahun: record.testTahun ? String(record.testTahun) : "2026",
+      alergiObat: typeof record.alergiObat === 'boolean' 
+        ? (record.alergiObat ? 'Ada Alergi' : 'Tidak Ada') 
+        : String(record.alergiObat || 'Tidak Ada'),
+    };
+
     const res = await fetch(`${API_BASE_URL}/api/records`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(record)
+      headers: { 
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      },
+      body: JSON.stringify(safePayload)
     });
     const json = await res.json();
-    return res.ok || json.success === true; // Diubah jadi lebih longgar agar pasti lolos
+    return res.ok && json.success === true;
   } catch (err) {
     console.error('[MySQL Service] Gagal simpan record ke MySQL:', err);
     return false;
   }
 }
-
 /**
- * Hapus rekam medis dari MySQL
+ * 7. Hapus Rekam Medis dari MySQL (Dilindungi Middleware)[cite: 3, 12]
  */
 export async function deleteMySqlRecord(id: string): Promise<boolean> {
   try {
     const res = await fetch(`${API_BASE_URL}/api/records/${encodeURIComponent(id)}`, {
-      method: 'DELETE'
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(), // 👈 Wajib dibawa
+      }
     });
     return res.ok;
   } catch (err) {
@@ -127,13 +251,16 @@ export async function deleteMySqlRecord(id: string): Promise<boolean> {
 }
 
 /**
- * Simpan banyak rekam medis sekaligus ke MySQL (Bulk Import)
+ * 8. Simpan Banyak Rekam Medis Sekaligus (Bulk Import) (Dilindungi Middleware)[cite: 3, 12]
  */
 export async function bulkSaveMySqlRecords(records: MCURecord[]): Promise<boolean> {
   try {
     const res = await fetch(`${API_BASE_URL}/api/records/bulk-import`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(), // 👈 Wajib dibawa
+      },
       body: JSON.stringify(records)
     });
     return res.ok;
@@ -144,13 +271,16 @@ export async function bulkSaveMySqlRecords(records: MCURecord[]): Promise<boolea
 }
 
 /**
- * Verifikasi PIN Admin terhadap tabel `admin_users` di MySQL
+ * 9. Verifikasi PIN Admin Terhadap Tabel `admin_users` di MySQL (Dilindungi Middleware)[cite: 3, 12]
  */
 export async function verifyAdminPinMySql(pin: string): Promise<boolean> {
   try {
     const res = await fetch(`${API_BASE_URL}/api/auth/verify-pin`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(), // 👈 Wajib dibawa
+      },
       body: JSON.stringify({ pin })
     });
     const json = await res.json();
@@ -161,13 +291,16 @@ export async function verifyAdminPinMySql(pin: string): Promise<boolean> {
 }
 
 /**
- * Ubah PIN Admin di tabel `admin_users` di MySQL
+ * 10. Ubah PIN Admin di Tabel `admin_users` di MySQL (Dilindungi Middleware)[cite: 3, 12]
  */
 export async function changeAdminPinMySql(newPin: string): Promise<{ success: boolean; error?: string }> {
   try {
     const res = await fetch(`${API_BASE_URL}/api/auth/change-pin`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(), // 👈 Wajib dibawa
+      },
       body: JSON.stringify({ newPin })
     });
     const json = await res.json();
@@ -178,13 +311,16 @@ export async function changeAdminPinMySql(newPin: string): Promise<{ success: bo
 }
 
 /**
- * Sinkronkan seluruh database badge karyawan ke MySQL melalui API backend
+ * 11. Sinkronkan Seluruh Database Badge Karyawan ke MySQL (Dilindungi Middleware)[cite: 3, 12]
  */
 export async function syncBadgesToMySql(employees?: Employee[]): Promise<{ success: boolean; count: number; message: string }> {
   try {
     const res = await fetch(`${API_BASE_URL}/api/mysql/sync-badges`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(), // 👈 Wajib dibawa
+      },
       body: JSON.stringify({ employees: employees || SAMPLE_EMPLOYEES })
     });
     return await res.json();
@@ -198,7 +334,7 @@ export async function syncBadgesToMySql(employees?: Employee[]): Promise<{ succe
 }
 
 /**
- * Buat skrip SQL lengkap untuk 50 Badge Karyawan (Tabel employees)
+ * 12. Buat Skrip SQL Lengkap untuk 50 Badge Karyawan (Tabel employees)
  */
 export function getEmployeesSqlScript(): string {
   const rows = SAMPLE_EMPLOYEES.map(e => 
@@ -237,13 +373,12 @@ ON DUPLICATE KEY UPDATE \`nama\` = VALUES(\`nama\`), \`bagian\` = VALUES(\`bagia
 }
 
 /**
- * Download file backup SQL lengkap (.sql) langsung dari browser
- * Menyertakan skema CREATE TABLE, Master Seluruh Database Badge Karyawan, dan Data MCU
+ * 13. Download File Backup SQL Lengkap (.sql) Langsung dari Browser
  */
 export function downloadSqlBackup(records: MCURecord[], filename = 'mcu_data_lengkap_mysql.sql') {
   const timestamp = new Date().toISOString();
   
-  const activePin = (typeof window !== 'undefined' && localStorage.getItem('pusri_admin_pin')) || 'Noisy1122';
+  const activePin = (typeof window !== 'undefined' && localStorage.getItem('pusri_admin_pin')) || '';
   const escapedPin = activePin.replace(/'/g, "''");
 
   const employeeRows = SAMPLE_EMPLOYEES.map(e => 
